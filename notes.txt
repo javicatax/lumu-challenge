@@ -1,0 +1,39 @@
+=== intake summary ===
+records processed: 4597
+unique events: 4597
+unique client IPs: 4221
+by verdict:
+  allow: 2813
+  block: 949
+  monitor: 922
+by collector:
+  col-01: 326
+  col-02: 313
+  col-03: 2483
+  col-04: 275
+  col-05: 282
+  col-06: 291
+  col-07: 290
+  col-08: 337
+
+ === Tests ===
+test_bad_timestamp_is_rejected (intake.tests.test_intake.TestNormalize.test_bad_timestamp_is_rejected) ... ok
+test_missing_field_is_rejected (intake.tests.test_intake.TestNormalize.test_missing_field_is_rejected) ... ok
+test_normalizes_a_good_record (intake.tests.test_intake.TestNormalize.test_normalizes_a_good_record) ... ok
+test_epoch_millis (intake.tests.test_intake.TestParseTimestamp.test_epoch_millis) ... ok
+test_epoch_seconds (intake.tests.test_intake.TestParseTimestamp.test_epoch_seconds) ... ok
+test_epoch_seconds_as_string (intake.tests.test_intake.TestParseTimestamp.test_epoch_seconds_as_string) ... ok
+test_iso_with_z (intake.tests.test_intake.TestParseTimestamp.test_iso_with_z) ... ok
+test_iso_without_zone (intake.tests.test_intake.TestParseTimestamp.test_iso_without_zone) ... ok
+test_space_separator (intake.tests.test_intake.TestParseTimestamp.test_space_separator) ... ok
+test_counts_one_record (intake.tests.test_intake.TestSummary.test_counts_one_record) ... ok
+test_counts_two_different_ips (intake.tests.test_intake.TestSummary.test_counts_two_different_ips) ... ok
+test_identical_records_are_one_event (intake.tests.test_intake.TestSummary.test_identical_records_are_one_event) ... ok
+test_render_includes_totals (intake.tests.test_intake.TestSummary.test_render_includes_totals) ... ok
+
+----------------------------------------------------------------------
+Ran 13 tests in 0.001s
+
+OK
+
+=========================================================================================================================
