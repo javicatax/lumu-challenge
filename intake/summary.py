@@ -5,13 +5,24 @@ import json
 
 MISSING = "(missing)"
 
-
 def _looks_like_ipv4(text):
+    """Strict IPv4 validation.
+      - require the value to be a string
+      - require ASCII digits only
+      - reject leading zeros
+      - enforce 0..255 per octet
+    """
+    if not isinstance(text, str):
+        return False
     parts = text.split(".")
     if len(parts) != 4:
         return False
     for part in parts:
-        if not part.isdigit() or not 0 <= int(part) <= 255:
+        if not part.isascii() or not part.isdigit():
+            return False
+        if len(part) > 1 and part[0] == "0":
+            return False  # no leading zeros
+        if not 0 <= int(part) <= 255:
             return False
     return True
 
@@ -57,8 +68,14 @@ class Summary:
         collector = record["collector_id"]
         self.by_collector[collector] = self.by_collector.get(collector, 0) + 1
 
-        if not _looks_like_ipv4(record["client_ip"]):
-            return
+        # --- Unique IPs: only syntactically valid IPv4 ---
+        client_ip = record.get("client_ip")
+        if client_ip is None:
+            self.missing_client_ip += 1
+        elif _looks_like_ipv4(client_ip):
+            self.unique_ips.add(client_ip)
+        else:
+            self.invalid_ips += 1
 
         self.unique_events.add(fingerprint_function(record))
 
@@ -71,8 +88,6 @@ class Summary:
             self.missing_received_at += 1
         if record.get("clock_suspect"):
             self.clock_suspect += 1
-
-        self.unique_ips.add(record["client_ip"])
 
     def render(self):
         lines = []
@@ -95,10 +110,11 @@ class Summary:
         lines.append("")
 
         lines.append("By verdict")
-
         for verdict in sorted(self.by_verdict):
             lines.append(f"  {verdict}: {self.by_verdict[verdict]}")
-        lines.append("by collector:")
+        lines.append("")
+
+        lines.append("By collector")
         for collector in sorted(self.by_collector):
             lines.append(f"  {collector}: {self.by_collector[collector]}")
 

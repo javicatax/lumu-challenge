@@ -2,3 +2,4 @@ incoming/
 incoming_large/
 __pycache__/
 *.pyc
+.idea/

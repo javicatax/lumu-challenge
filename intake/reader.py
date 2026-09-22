@@ -1,6 +1,7 @@
 """Read collector batch files and print a summary."""
 
 import argparse
+from collections import Counter
 import json
 import os
 import sys
@@ -35,13 +36,18 @@ def read_batch(path):
 
 def run(directory):
     summary = Summary()
+    rejections = Counter()
     for path in batch_files(directory):
-        for raw in read_batch(path):
-            record = normalize(raw)
-            if record is None:
+        for raw, reason in read_batch(path):
+            if reason is not None:
+                rejections[reason] += 1
+                continue
+            record, reason = normalize(raw)
+            if reason is not None:
+                rejections[reason] += 1
                 continue
             summary.add(record)
-    return summary
+    return summary, rejections
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Lumu intake service")
@@ -52,10 +58,14 @@ def main(argv=None):
         print(f"no such directory: {args.dir}", file=sys.stderr)
         return 1
 
-    summary = run(args.dir)
+    summary, rejections = run(args.dir)
     print(summary.render())
+    if rejections:
+        print()
+        print("Rejections")
+        for reason in sorted(rejections):
+            print(f"  {reason}: {rejections[reason]}")
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
