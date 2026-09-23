@@ -78,7 +78,6 @@ def _clean_attribute_string(value):
         return None
     return text
 
-
 # -- Clock validation
 
 def clock_validation(event_time, received_at):
@@ -87,7 +86,6 @@ def clock_validation(event_time, received_at):
         return False
     delta = event_time - received_at
     return delta > MAX_FUTURE_CLOCK_SKEW or delta < -MAX_PAST_CLOCK_SKEW
-
 
 def normalize(raw):
     """Turn one raw collector record into a normalized record.
