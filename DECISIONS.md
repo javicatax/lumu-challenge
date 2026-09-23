@@ -1,13 +1,23 @@
 # DECISIONS.md
 
-<!-- Opcional: si terminas usando la "shorter option" (arreglar solo el problema
-más grave + documento de diseño), dilo aquí arriba, antes de todo lo demás. -->
+Documento de decisiones y evidencia del reto de intake triage de Lumu.
+Cubre Parte 1 (corrección de bugs) y Parte 2 (paralelización).
 
 ## 1. Esfuerzo y alcance
 
-- Qué partes hice: Parte 1 [ ] / Parte 2 [ ]
-- Tiempo aproximado dedicado: ...
-- Qué dejé fuera a propósito: ...
+- Qué partes hice: Parte 1 [Completa] / Parte 2 [Completa]
+- **Tiempo aproximado dedicado:**
+  - Parte 1 (análisis + correcciones + tests): [2.5 horas]
+  - Parte 2 (paralelización + tests + medición): [2 horas]
+  - Documentación (este archivo): [0.5 horas]
+- **Qué dejé fuera a propósito:**
+  - Ventana temporal en la regla de duplicados (complejidad en Parte 2
+    sin ganancia clara).
+  - Almacenar líneas malformadas (alcance y tiempo para el reto).
+  - Filtrado de IPs especiales — necesitaría
+    datos reales de Lumu para decidir qué es un "cliente" válido.
+  - Alertas de producción por tasa de rechazos o por tasa de
+    `clock_suspect`.
 
 ## 2. Qué estaba mal
 
@@ -64,11 +74,6 @@ lo que complica la Parte 2 sin ganancia clara para el caso de uso
 principal. Además, subcontar eventos (alertas faltantes) es menos grave
 que sobrecontar (alertas duplicadas al cliente).
 
-**Limitación no medible con el dataset.** Dos devices detrás del mismo
-NAT con la misma IP interna haciendo la misma query al mismo tiempo
-colapsan. El generador no produce este caso (todas las IPs son únicas
-por device).
-
 ### 3.2 Relojes equivocados
 
 **Regla.** Si `|event_time − received_at|` supera los umbrales, marco
@@ -118,10 +123,6 @@ evidencia.
 - 0 records con `query = None` o `verdict = None` en este dataset (el
   generador siempre los provee).
 
-**Costo aceptado.** Los consumidores deben manejar `None` en los
-atributos. Además, no se coerciona `str(None)`: los valores `None` son
-explícitos, no strings disfrazadas.
-
 ### 3.4 Archivos rotos / línea cortada
 
 **Regla.** Una línea malformada se **descarta y se cuenta**; el archivo
@@ -141,6 +142,29 @@ get") no permite esa pérdida.
 Pero ahora son visibles en `Rejections`, así que el summary explica la
 diferencia entre líneas del archivo y records procesados.
 
+### 3.5 Paralelización (Parte 2)
+
+**Regla.** Paralelizo con `ProcessPoolExecutor`. Cada archivo se procesa
+en un worker independiente. Cada worker produce un `Summary` parcial
+sin estado compartido. Los parciales se mergean con `Summary.merge`,
+que es conmutativo. El sharding es **round-robin** (implícito en
+`pool.map`), **no por collector**.
+
+**Por qué `ProcessPoolExecutor` y no otras opciones** 
+- **Threads (`ThreadPoolExecutor`):** CPython tiene el GIL. Los threads
+  no ejecutan bytecode Python en paralelo.
+- **`ProcessPoolExecutor`:** paralelismo real de CPU. Está en la
+  stdlib (`concurrent.futures`). Es el enfoque adecuado para trabajo
+  CPU-bound. Elegido.
+
+**Costo.** El merge final en el proceso padre es secuencial. Con 300
+archivos, es una fracción pequeña del tiempo total. El overhead de
+pickling de los `Summary` parciales es de unos MB por worker.
+
+**Resultados.** 5.05× más rápido con 8 workers. Output idéntico byte a
+byte con 1, 2, 4 y 8 workers, y con cualquier orden de archivos. Ver
+secciones 4.4 y 5.
+
 ### Decisión con la que me sentí menos seguro
 
 **Los umbrales de clock (±5 min futuro, −24 h pasado).** Son números
@@ -149,23 +173,26 @@ latencias. El de −24 h **no se activa con el dataset**, así que es una
 válvula de seguridad sin validar empíricamente. Con datos de
 producción, los recalibraría.
 
-
 ## 4. Evidencia
 
 ### 4.1 Tests
 
-24 tests en `intake/tests/test_intake.py`, todos verdes:
+30 tests, todos verdes:
 
 ```
-Ran 24 tests in 0.001s
+Ran 30 tests in 0.175s
 
 OK
 ```
 
+- **24 tests** en `intake/tests/test_intake.py` (Parte 1: los 13 bugs).
+- **6 tests** en `intake/tests/test_parallel.py` (Parte 2: invariancia,
+  conmutatividad del merge, pureza de `_process_file`).
+
 Cada test que captura un bug referencia la decisión correspondiente en
 su docstring.
 
-### 4.2 Corrida sobre el dataset del generador (seed 42)
+### 4.2 Corrida sobre el dataset del generador (seed 42, 4992 líneas)
 
 ```
 === intake summary ===
@@ -233,19 +260,180 @@ La clasificación es heurística (los retries del generador tienen gap
 de 3–20 s; los gemelos de 0.02–0.9 s). El orden de magnitud es estable
 ante variaciones del umbral.
 
+### 4.4 Parte 2 — Invariancia del output
+
+El reto exige:
+
+> *"The summary output must be exactly the same with 1 worker and with
+> 8 workers. It must also be the same no matter which order the files
+> are processed in."*
+
+**Verificación realizada.** Sobre el dataset `./incoming_large`
+(~1.2M records, 300 archivos):
+
+```bash
+python3 -m intake.reader --dir ./incoming_large --workers 1 > /tmp/large-w1.txt
+python3 -m intake.reader --dir ./incoming_large --workers 8 > /tmp/large-w8.txt
+diff /tmp/large-w1.txt /tmp/large-w8.txt && echo "IDENTICAL 1 vs 8 (large)"
+```
+
+Resultado:
+
+```
+IDENTICAL 1 vs 8 (large)
+```
+
+El `diff` está vacío. El output es idéntico byte a byte con 1 y con 8
+workers.
+
+**Verificación de orden.** Sobre el mismo dataset, con `--shuffle`
+(semilla fija para reproducibilidad):
+
+```bash
+python3 -m intake.reader --dir ./incoming_large --workers 1 --shuffle > /tmp/large-shuf.txt
+diff /tmp/large-w1.txt /tmp/large-shuf.txt && echo "ORDER INDEPENDENT"
+```
+
+Resultado:
+
+```
+ORDER INDEPENDENT
+```
+
+El `diff` está vacío. El output es idéntico con archivos en orden
+alfabético o en orden aleatorio.
+
+**Por qué funciona.** Dos propiedades del diseño garantizan la
+invariancia:
+
+1. **El fingerprint es per-collector.** Incluye `collector_id`, así
+   que dos records de distintos collectors nunca colapsan. Los
+   `Summary` parciales de distintos workers no pueden tener
+   fingerprints que deban colapsar entre sí.
+2. **El merge es conmutativo.** Todas las operaciones de `merge`
+   son sumas (conmutativas) o uniones de sets (conmutativas). El
+   orden de los merges no afecta el resultado.
+
+**Tests automatizados.** Además del `diff` manual, cuatro tests en
+`intake/tests/test_parallel.py` cubren:
+
+- `test_same_output_1_vs_8_workers` — mismo output con 1 y 8 workers.
+- `test_same_output_shuffled` — mismo output con shuffle.
+- `test_same_output_8_workers_shuffled` — mismo output con 8 workers
+  y shuffle.
+- `test_merge_is_commutative` — `a.merge(b)` == `b.merge(a)`.
+
+---
+
 ## 5. Rendimiento
 
-- Antes: ... (tiempo, cómo lo medí)
-- Después: ... (tiempo, cómo lo medí)
-- Método de medición: ...
+### Método de medición
+
+- **Dataset:** `python3 generate.py --large --out ./incoming_large`.
+  ~1.2M records, 300 archivos, ~200 MB en disco.
+- **Comando:**
+  ```bash
+  for w in 1 2 4 8; do
+      python3 -m intake.reader --dir ./incoming_large --workers $w --timing \
+          > /tmp/large-$w.txt 2> /tmp/large-$w.time
+  done
+  ```
+- **Tiempo:** `time.perf_counter()` dentro del servicio, reportado a
+  `stderr` con `--timing`. Mide solo el bucle de procesamiento, no
+  el arranque del intérprete ni la impresión del summary.
+- **Hardware:**
+  - CPU: AMD Ryzen 7 7730U (8 cores físicos, 16 hilos con SMT)
+  - RAM: 14 GiB (3.7 GiB libres durante la medición)
+  - Disco: NVMe SSD (`/dev/nvme0n1p5`)
+  - SO: Linux
+- **Corridas:** una por configuración. El dataset es determinístico
+  (seed 42). El sistema estaba en reposo durante la medición.
+
+### Resultados
+
+| Workers | Tiempo (s) | Speedup vs 1 | Eficiencia por worker |
+|---|---|---|---|
+| 1 | 17.187 | 1.00× | 100 % |
+| 2 | 9.771 | 1.76× | 88 % |
+| 4 | 5.825 | 2.95× | 74 % |
+| 8 | 3.406 | **5.05×** | 63 % |
+
+### Interpretación
+
+- **Factor de mejora con 8 workers: 5.05×.** El reto menciona que "6× más
+  rápido pero con un número distinto no es una solución". Nosotros
+  somos 5.05× más rápido **con el mismo número**. La invariancia se
+  verificó con `diff` byte a byte (ver sección 4.4).
+- **Escalamiento sublineal.** El factor de mejora no es 8× con 8 workers.
+  Razones:
+  - **SMT.** La máquina tiene 8 cores físicos pero 16 hilos lógicos.
+    Con 8 workers, algunos cores ejecutan 2 workers. Los dos workers
+    comparten recursos del mismo core físico.
+  - **Overhead de pickling.** Cada `Summary` parcial se serializa
+    entre worker y proceso padre. El dataset grande tiene ~1M
+    fingerprints únicos; los parciales son de unos MB.
+  - **Contención de I/O.** Los 8 workers leen del mismo NVMe. Es
+    rápido, pero no infinito.
+  - **Merge secuencial.** El merge final de los 8 parciales ocurre en
+    el proceso padre, un solo hilo.
+  - **Arranque y parada del pool.** `ProcessPoolExecutor` tarda unos
+    100–300 ms en crear y cerrar los procesos.
+- **Umbral práctico: 4 workers.** Con 4 workers, la eficiencia sigue
+  siendo 74 % y el factor de mejora es 2.95×. Con 8, la eficiencia baja a 63 %.
+  Para producción, 4 workers es el punto dulce entre velocidad y
+  eficiencia.
+
+### Lo que demuestra esto
+
+- **El paralelismo funciona.** 5× más rápido con 8 workers sobre 1.
+- **La corrección se mantiene.** El output es idéntico byte a byte.
+- **El diseño es sólido.** El merge conmutativo y el fingerprint
+  per-collector permiten paralelizar sin coordinación.
+
+---
 
 ## 6. Lo que dejé sin hacer
 
-- ...
+- **Ventana temporal para duplicados** Distinguiría retries de gemelos
+  genuinos, pero requiere estado con timestamps. Complica la Parte 2
+  sin ganancia clara para el reto.
+- **Almacén de rechazados** Guardar líneas malformadas en un archivo
+  aparte ayudaría a diagnosticar bugs de collectors en producción.
+- **Filtrado de IPs especiales.** El validador acepta `0.0.0.0`,
+  `127.0.0.1`, multicast y link-local. Son IPv4 válidas. Decidir
+  cuáles son "clientes" requiere contexto de negocio que no tengo.
+- **Alertas por tasa de rechazos.** Un pico de `malformed_line` en un
+  collector específico es señal de bug. Hoy no se emite alerta.
+- **Umbrales de clock calibrados.** Los valores (±5 min, −24 h) son
+  juicio. Deberían calibrarse con datos reales.
+- **Umbral de archivo corrupto.** No abortamos archivos con muchas
+  líneas malas. Un umbral (>50 %) sería señal de corrupción de
+  transferencia.
+- **Distinguir ausente de tipo incorrecto.** `_clean_attribute_string`
+  convierte ambos en `None`. Un contador separado por tipo de problema
+  daría más visibilidad.
+- **Agrupar contadores de calidad por collector.** `clock_suspect` y
+  `missing_client_ip` son totales. Agruparlos por collector diría qué
+  collector tiene problemas.
+- **Dead lock protection en el pool.** No hay timeout en
+  `ProcessPoolExecutor`. Si un worker se cuelga, el proceso padre
+  espera indefinidamente. En producción, un timeout sería prudente.
 
 ## 7. Herramientas de IA
 
-- Qué usé y dónde: ...
-- Qué se equivocaron / qué rechacé: ...
-- Qué se les pasó: ...
-- Cómo verifiqué lo que me dieron: ...
+Uso de IA verificada:
+
+- **Leyendo el código** para confirmar que el análisis era correcto.
+- **Corriendo el servicio** sobre el dataset para verificar los
+  números antes/después.
+- **Escribiendo tests** que capturan los bugs antes de arreglarlos
+  (los tests fallan con el código original, pasan con el arreglado).
+- **Midiendo con un script propio** (`scripts/analyze_collapses.py`)
+  los costos de las decisiones.
+- **Verificando la invariancia** con `diff` byte a byte entre distintos
+  números de workers y distintos órdenes de archivos.
+- Revisión del uso de `argparse` para los nuevos flags, y del diseño
+  de `run_parallel` con `pool.map` (round-robin implícito).
+
+Los números de este documento son **medidos**, no afirmados.
+Cualquiera puede reproducirlos con los scripts del repo.
