@@ -89,6 +89,36 @@ class Summary:
         if record.get("clock_suspect"):
             self.clock_suspect += 1
 
+    def merge(self, other):
+        """Merge another Summary into this one and return self.
+
+        Every operation here is commutative:
+          - counters: sum
+          - dict counters: sum per key
+          - sets: union
+
+        Therefore, the result is independent of merge order.
+        """
+        self.processed += other.processed
+
+        for key, value in other.by_verdict.items():
+            self.by_verdict[key] = self.by_verdict.get(key, 0) + value
+
+        for key, value in other.by_collector.items():
+            self.by_collector[key] = self.by_collector.get(key, 0) + value
+
+        self.unique_events |= other.unique_events
+        self.unique_ips |= other.unique_ips
+
+        self.invalid_ips += other.invalid_ips
+        self.missing_client_ip += other.missing_client_ip
+        self.missing_query += other.missing_query
+        self.missing_verdict += other.missing_verdict
+        self.clock_suspect += other.clock_suspect
+        self.missing_received_at += other.missing_received_at
+
+        return self
+
     def render(self):
         lines = []
         lines.append("=== intake summary ===")
